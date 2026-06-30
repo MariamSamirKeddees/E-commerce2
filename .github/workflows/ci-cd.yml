@@ -13,7 +13,7 @@ on:
 
 env:
   IMAGE_NAME: ecommerce-api
-  DEPLOY_DIR: /apps/E-Commerce
+  DEPLOY_DIR: /apps/E-commerce
 
 jobs:
   build-and-push:
@@ -112,7 +112,7 @@ jobs:
             IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
 
             if [ ! -f .env ]; then
-              echo "ERROR: .env not found. Create /apps/E-Commerce/.env manually on the server."
+              echo "ERROR: .env not found. Create /apps/E-commerce/.env manually on the server."
               exit 1
             fi
 
