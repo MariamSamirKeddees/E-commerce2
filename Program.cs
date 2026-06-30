@@ -14,7 +14,7 @@ using E_Commerce.Repository;
 using E_Commerce.Interfaces;
 using E_Commerce.DbInitliazer;
 using Microsoft.EntityFrameworkCore.Internal;
-using E_Commerce.Context;
+using Microsoft.AspNetCore.HttpOverrides;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -118,11 +118,20 @@ builder.Services.AddTransient<ISMsService, SmsService>();
 
 var app = builder.Build();
 
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto | ForwardedHeaders.XForwardedHost
+});
+
 // Configure the HTTP request pipeline.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
+
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<ECommerceDbContext>();
+    db.Database.Migrate();
 }
 
 app.UseCors("AllowAll");
