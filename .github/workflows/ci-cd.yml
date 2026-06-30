@@ -1,7 +1,7 @@
-# CI/CD: build & push to Docker Hub → copy compose/Dockerfile/.env to server → pull & start.
+# CI/CD: build & push to Docker Hub → copy compose + Dockerfile → pull & start.
+# .env is managed manually on the server at DEPLOY_DIR.
 #
 # Secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, SERVER_IP, SERVER_USER, SERVER_PASSWORD
-#          PRODUCTION_ENV — paste your full production .env file
 
 name: CI/CD
 
@@ -13,7 +13,7 @@ on:
 
 env:
   IMAGE_NAME: ecommerce-api
-  DEPLOY_DIR: /apps/E-commerce
+  DEPLOY_DIR: /apps/E-Commerce
 
 jobs:
   build-and-push:
@@ -78,26 +78,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Prepare deploy bundle
-        env:
-          PRODUCTION_ENV: ${{ secrets.PRODUCTION_ENV }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
-          if [ -z "$PRODUCTION_ENV" ]; then
-            echo "::error::PRODUCTION_ENV secret is empty. Add it in GitHub Settings → Secrets."
-            exit 1
-          fi
-
           mkdir -p deploy-bundle
           cp docker-compose.yml Dockerfile deploy-bundle/
-          touch deploy-bundle/production.env
-          printf '%s\n' "$PRODUCTION_ENV" >> deploy-bundle/production.env
-
-          IMAGE="${DOCKERHUB_USERNAME}/${{ env.IMAGE_NAME }}:latest"
-          if grep -q '^DOCKER_IMAGE=' deploy-bundle/production.env; then
-            sed -i "s|^DOCKER_IMAGE=.*|DOCKER_IMAGE=${IMAGE}|" deploy-bundle/production.env
-          else
-            echo "DOCKER_IMAGE=${IMAGE}" >> deploy-bundle/production.env
-          fi
 
       - name: Ensure deploy directory exists on server
         uses: appleboy/ssh-action@v1
@@ -107,13 +90,13 @@ jobs:
           password: ${{ secrets.SERVER_PASSWORD }}
           script: mkdir -p ${{ env.DEPLOY_DIR }}
 
-      - name: Copy docker-compose.yml, Dockerfile, and .env to server
+      - name: Copy docker-compose.yml and Dockerfile to server
         uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
-          source: "deploy-bundle/docker-compose.yml,deploy-bundle/Dockerfile,deploy-bundle/production.env"
+          source: "deploy-bundle/docker-compose.yml,deploy-bundle/Dockerfile"
           target: ${{ env.DEPLOY_DIR }}
           strip_components: 1
 
@@ -128,25 +111,15 @@ jobs:
             cd ${{ env.DEPLOY_DIR }}
             IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
 
-            if [ -d deploy-bundle ]; then
-              mv deploy-bundle/* . 2>/dev/null || true
-              rmdir deploy-bundle 2>/dev/null || true
-            fi
-
             if [ ! -f .env ]; then
-              mv production.env .env
-            else
-              rm -f production.env
-              if grep -q '^DOCKER_IMAGE=' .env; then
-                sed -i "s|^DOCKER_IMAGE=.*|DOCKER_IMAGE=${IMAGE}|" .env
-              else
-                echo "DOCKER_IMAGE=${IMAGE}" >> .env
-              fi
+              echo "ERROR: .env not found. Create /apps/E-Commerce/.env manually on the server."
+              exit 1
             fi
 
-            if [ ! -f docker-compose.yml ] || [ ! -f .env ]; then
-              echo "missing docker-compose.yml or .env"
-              exit 1
+            if grep -q '^DOCKER_IMAGE=' .env; then
+              sed -i "s|^DOCKER_IMAGE=.*|DOCKER_IMAGE=${IMAGE}|" .env
+            else
+              echo "DOCKER_IMAGE=${IMAGE}" >> .env
             fi
 
             docker compose pull
