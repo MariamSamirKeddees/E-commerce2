@@ -1,3 +1,8 @@
+# CI/CD: build & push to Docker Hub → copy compose/Dockerfile/.env to server → pull & start.
+#
+# Secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, SERVER_IP, SERVER_USER, SERVER_PASSWORD
+#          PRODUCTION_ENV — paste your full production .env file (passwords, ports, JWT key, etc.)
+
 name: CI/CD
 
 on:
@@ -8,6 +13,7 @@ on:
 
 env:
   IMAGE_NAME: ecommerce-api
+  DEPLOY_DIR: /apps/E-commerce
 
 jobs:
   build-and-push:
@@ -68,27 +74,50 @@ jobs:
       contents: read
 
     steps:
-      - name: SSH into server and deploy
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare deploy bundle
+        env:
+          PRODUCTION_ENV: ${{ secrets.PRODUCTION_ENV }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          mkdir -p deploy-bundle
+          cp docker-compose.yml Dockerfile deploy-bundle/
+          printf '%s\n' "$PRODUCTION_ENV" > deploy-bundle/.env
+          IMAGE="${DOCKERHUB_USERNAME}/${{ env.IMAGE_NAME }}:latest"
+          if grep -q '^DOCKER_IMAGE=' deploy-bundle/.env; then
+            sed -i "s|^DOCKER_IMAGE=.*|DOCKER_IMAGE=${IMAGE}|" deploy-bundle/.env
+          else
+            echo "DOCKER_IMAGE=${IMAGE}" >> deploy-bundle/.env
+          fi
+
+      - name: Ensure deploy directory exists on server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          script: mkdir -p ${{ env.DEPLOY_DIR }}
+
+      - name: Copy docker-compose.yml, Dockerfile, and .env to server
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          source: "deploy-bundle/docker-compose.yml,deploy-bundle/Dockerfile,deploy-bundle/.env"
+          target: ${{ env.DEPLOY_DIR }}
+          overwrite: true
+
+      - name: Pull images and start containers
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
-            if [ -d "/apps/E-commerce" ]; then
-              cd /apps/E-commerce
-            else
-              mkdir -p /apps/E-commerce
-              cd /apps/E-commerce
-            fi
-
-            IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
-            if [ -f .env ] && grep -q '^DOCKER_IMAGE=' .env; then
-              sed -i "s|^DOCKER_IMAGE=.*|DOCKER_IMAGE=${IMAGE}|" .env
-            else
-              echo "DOCKER_IMAGE=${IMAGE}" >> .env
-            fi
-
-            docker compose pull api
+            cd ${{ env.DEPLOY_DIR }}
+            docker compose pull
             docker compose up -d --no-build --remove-orphans
             docker image prune -f
