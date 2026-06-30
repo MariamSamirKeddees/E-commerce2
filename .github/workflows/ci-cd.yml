@@ -1,7 +1,7 @@
 # CI/CD: build & push to Docker Hub → copy compose/Dockerfile/.env to server → pull & start.
 #
 # Secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, SERVER_IP, SERVER_USER, SERVER_PASSWORD
-#          PRODUCTION_ENV — paste your full production .env file (passwords, ports, JWT key, etc.)
+#          PRODUCTION_ENV — paste your full production .env file
 
 name: CI/CD
 
@@ -82,14 +82,21 @@ jobs:
           PRODUCTION_ENV: ${{ secrets.PRODUCTION_ENV }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
+          if [ -z "$PRODUCTION_ENV" ]; then
+            echo "::error::PRODUCTION_ENV secret is empty. Add it in GitHub Settings → Secrets."
+            exit 1
+          fi
+
           mkdir -p deploy-bundle
           cp docker-compose.yml Dockerfile deploy-bundle/
-          printf '%s\n' "$PRODUCTION_ENV" > deploy-bundle/.env
+          touch deploy-bundle/production.env
+          printf '%s\n' "$PRODUCTION_ENV" >> deploy-bundle/production.env
+
           IMAGE="${DOCKERHUB_USERNAME}/${{ env.IMAGE_NAME }}:latest"
-          if grep -q '^DOCKER_IMAGE=' deploy-bundle/.env; then
-            sed -i "s|^DOCKER_IMAGE=.*|DOCKER_IMAGE=${IMAGE}|" deploy-bundle/.env
+          if grep -q '^DOCKER_IMAGE=' deploy-bundle/production.env; then
+            sed -i "s|^DOCKER_IMAGE=.*|DOCKER_IMAGE=${IMAGE}|" deploy-bundle/production.env
           else
-            echo "DOCKER_IMAGE=${IMAGE}" >> deploy-bundle/.env
+            echo "DOCKER_IMAGE=${IMAGE}" >> deploy-bundle/production.env
           fi
 
       - name: Ensure deploy directory exists on server
@@ -106,9 +113,9 @@ jobs:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
-          source: "deploy-bundle/docker-compose.yml,deploy-bundle/Dockerfile,deploy-bundle/.env"
+          source: "deploy-bundle/docker-compose.yml,deploy-bundle/Dockerfile,deploy-bundle/production.env"
           target: ${{ env.DEPLOY_DIR }}
-          overwrite: true
+          strip_components: 1
 
       - name: Pull images and start containers
         uses: appleboy/ssh-action@v1
@@ -117,7 +124,32 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           script: |
+            set -euo pipefail
             cd ${{ env.DEPLOY_DIR }}
+            IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
+
+            if [ -d deploy-bundle ]; then
+              mv deploy-bundle/* . 2>/dev/null || true
+              rmdir deploy-bundle 2>/dev/null || true
+            fi
+
+            if [ ! -f .env ]; then
+              mv production.env .env
+            else
+              rm -f production.env
+              if grep -q '^DOCKER_IMAGE=' .env; then
+                sed -i "s|^DOCKER_IMAGE=.*|DOCKER_IMAGE=${IMAGE}|" .env
+              else
+                echo "DOCKER_IMAGE=${IMAGE}" >> .env
+              fi
+            fi
+
+            if [ ! -f docker-compose.yml ] || [ ! -f .env ]; then
+              echo "missing docker-compose.yml or .env"
+              exit 1
+            fi
+
             docker compose pull
             docker compose up -d --no-build --remove-orphans
+            docker compose ps
             docker image prune -f
