@@ -1,4 +1,4 @@
-# CI/CD: build & push to Docker Hub → copy compose + Dockerfile → pull & start.
+# CI/CD: check Docker Hub for image → build/push only if missing → copy files → pull & start.
 # .env is managed manually on the server at DEPLOY_DIR.
 #
 # Secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, SERVER_IP, SERVER_USER, SERVER_PASSWORD
@@ -17,19 +17,40 @@ env:
 
 jobs:
   build-and-push:
-    name: Validate, build & push
+    name: Build image if missing
     runs-on: ubuntu-latest
     permissions:
       contents: read
 
     steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Check if image exists on Docker Hub
+        id: image
+        run: |
+          IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest"
+          if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "Image $IMAGE already exists on Docker Hub."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Image $IMAGE not found on Docker Hub."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout repository
+        if: steps.image.outputs.exists == 'false'
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
+        if: steps.image.outputs.exists == 'false'
         uses: docker/setup-buildx-action@v3
 
       - name: Validate Docker build
+        if: steps.image.outputs.exists == 'false'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -40,29 +61,16 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha,prefix=,format=short
-
       - name: Build and push to Docker Hub
+        if: steps.image.outputs.exists == 'false'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -76,11 +84,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Prepare deploy bundle
-        run: |
-          mkdir -p deploy-bundle
-          cp docker-compose.yml Dockerfile deploy-bundle/
 
       - name: Ensure deploy directory exists on server
         uses: appleboy/ssh-action@v1
@@ -96,9 +99,8 @@ jobs:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
-          source: "deploy-bundle/docker-compose.yml,deploy-bundle/Dockerfile"
+          source: "docker-compose.yml,Dockerfile"
           target: ${{ env.DEPLOY_DIR }}
-          strip_components: 1
 
       - name: Pull images and start containers
         uses: appleboy/ssh-action@v1
